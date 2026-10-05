@@ -123,6 +123,17 @@ All runtime parameters are configured via environment variables (loaded via `pyd
 
 ---
 
+## Single-Laptop Multi-IP Architecture (TRUST_PROXY)
+
+To allow comprehensive testing and interactive demonstrations of multi-IP scenarios (such as Killer Test 2 innocent bystander isolation) from a single developer machine:
+- **Server Configuration**: The demo scripts start the Sentinel service with `TRUST_PROXY=true` in the environment.
+- **Client Requests**: Each `curl` invocation supplies an explicit `X-Forwarded-For` header:
+  - Attacker requests send `-H "X-Forwarded-For: 198.51.100.10"`.
+  - Normal / innocent user requests send `-H "X-Forwarded-For: 203.0.113.50"`.
+- **Resolution**: With `TRUST_PROXY=true`, the Blocker middleware and Demo Portal resolve the client IP from the `X-Forwarded-For` header instead of the local socket loopback (`127.0.0.1`), demonstrating true multi-IP defense on a single laptop.
+
+---
+
 ## Mermaid Architecture Diagram
 
 ```mermaid
@@ -173,8 +184,9 @@ flowchart TD
 
 ### Killer Test 2 (Innocent bystander isolation)
 - Sliding windows and SQLite decision records are strictly partitioned by IP (`value = client_ip`).
+- Demo scripts run the server with `TRUST_PROXY=true` and pass `X-Forwarded-For: 198.51.100.10` for the attacker and `X-Forwarded-For: 203.0.113.50` for the normal user.
 - Only the attacking IP (`198.51.100.10`) has decision records created.
-- Legitimate traffic from a separate IP (`203.0.113.50`) finds no matching record in SQLite and receives `HTTP 200 OK` from the Demo Portal.
+- Legitimate traffic from `203.0.113.50` finds no matching record in SQLite and receives `HTTP 200 OK` from the Demo Portal, completely isolated from the ban on the same machine.
 
 ### Killer Test 3 (Exact expiry)
 - Ban is created with short duration (e.g., 2 seconds).

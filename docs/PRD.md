@@ -55,53 +55,72 @@ University IT administrators responsible for keeping the student result portal a
 
 ## 6. Acceptance Criteria & Killer Test Execution
 
-The system's correctness is validated through three Killer Tests, each runnable via an automated `pytest` test and a standalone manual demo script.
+The system's correctness is validated through three Killer Tests. Each test is specified in **Given / When / Then** format, followed by both automated `pytest` and manual demo script execution details.
+
+> [!NOTE]
+> **Single-Laptop Multi-IP Demonstration**: For manual demo scripts, the server must be started with `TRUST_PROXY=true` in `.env` (or environment), and each `curl` command sends a distinct `X-Forwarded-For` header (e.g., attacker `198.51.100.10`, normal user `203.0.113.50`). This allows realistic multi-IP traffic to be tested and demonstrated from a single developer machine.
+
+---
 
 ### Killer Test 1 — Brute-Force Detection
 
-**Scenario**: One attacker IP generates 10 failed login attempts within 60 seconds (`BAN_THRESHOLD=10`, `WINDOW_SECONDS=60`). Upon the 10th failure, the IP is automatically banned. Subsequent requests return `HTTP 403 Forbidden` with the ban expiry time.
+**Given** an attacker IP (`198.51.100.10`) generates failed login attempts against `POST /login`,  
+**When** the 10th failed login attempt occurs within 60 seconds (`BAN_THRESHOLD=10`, `WINDOW_SECONDS=60`),  
+**Then** an Alert and Ban Decision (`until = now + BAN_DURATION_SECONDS`) are recorded in SQLite, and all subsequent requests from that IP are blocked by Blocker middleware returning `HTTP 403 Forbidden` with the ban expiry timestamp (`until`).
 
 - **Automated pytest execution**:
   - Command: `pytest -v tests/test_killer_1_brute_force.py`
-  - How it runs: The test initializes an in-memory or test SQLite database, mounts the Blocker middleware and Demo Portal, sends 10 consecutive invalid `POST /login` requests with `client.host = "198.51.100.10"`, processes log pipeline events, and verifies that the 11th request returns `403 Forbidden` with a JSON body containing `{"error": "IP is banned", "ip": "198.51.100.10", "until": "..."}`.
+  - How it runs: Initializes a test SQLite database and mounts Blocker middleware and Demo Portal with `TRUST_PROXY=true`. Sends 10 invalid `POST /login` requests with `X-Forwarded-For: 198.51.100.10`, processes log events through the pipeline, and asserts the 11th request returns `HTTP 403 Forbidden` with body `{"error": "IP is banned", "ip": "198.51.100.10", "until": "..."}`.
 - **Manual demo script execution**:
   - Command: `bash scripts/demo_killer_1.sh`
-  - How it runs: Starts the Sentinel server (`uvicorn app.main:app`), uses `curl` to issue 10 failed login attempts against `http://localhost:8000/login` with attacker IP header or socket, and displays the 11th request being blocked with `HTTP 403` and the ban end time.
+  - How it runs: Starts the Sentinel server with `TRUST_PROXY=true` (`uvicorn app.main:app`). Issues 10 failed login `curl` requests with `-H "X-Forwarded-For: 198.51.100.10"`. Demonstrates that the 11th `curl` request is blocked with `HTTP 403 Forbidden` and displays the ban end time.
 
 ---
 
 ### Killer Test 2 — Innocent Bystander Isolation
 
-**Scenario**: While an attacker IP is generating failed logins and gets banned, an innocent user logging in from a distinct IP is completely unaffected and continues to authenticate successfully.
+**Given** an attacker IP (`198.51.100.10`) has exceeded the threshold and is actively banned,  
+**When** a legitimate user from a distinct IP (`203.0.113.50`) submits valid login credentials (`student:secret2024`) to `POST /login`,  
+**Then** the legitimate user's request is allowed through by Blocker middleware, returning `HTTP 200 OK` (`Login successful`), proving that only the attacker IP is isolated and banned.
 
 - **Automated pytest execution**:
   - Command: `pytest -v tests/test_killer_2_bystander_isolation.py`
-  - How it runs: Attacker IP (`198.51.100.10`) sends 10 failed logins and is banned. Concurrently or immediately after, legitimate user IP (`203.0.113.50`) sends a valid `POST /login` (`student:secret2024`). The test verifies that the legitimate request returns `HTTP 200 OK` (`Login successful`) and is never blocked.
+  - How it runs: Triggers a ban for attacker IP `198.51.100.10` via 10 failed attempts with `X-Forwarded-For: 198.51.100.10`. Concurrently or immediately after, sends valid login credentials with `X-Forwarded-For: 203.0.113.50`. Asserts attacker receives `HTTP 403 Forbidden` while normal user receives `HTTP 200 OK`.
 - **Manual demo script execution**:
   - Command: `bash scripts/demo_killer_2.sh`
-  - How it runs: Script triggers 10 failed attempts from IP A (banned), then issues `curl` from IP B with valid credentials, verifying IP A receives `403 Forbidden` while IP B receives `200 OK`.
+  - How it runs: Starts server with `TRUST_PROXY=true`. Issues 10 failed login `curl` requests with `-H "X-Forwarded-For: 198.51.100.10"`. Then sends a valid login `curl` with `-H "X-Forwarded-For: 203.0.113.50"` and credentials `student:secret2024`. Displays terminal output showing `198.51.100.10` returning `403` and `203.0.113.50` returning `200 OK` from the same laptop.
 
 ---
 
 ### Killer Test 3 — Exact Expiry
 
-**Scenario**: An IP is banned with a short duration (e.g. `BAN_DURATION_SECONDS=2`). While $t < until$, requests return `HTTP 403`. Exactly when $t \ge until$, the IP is immediately unblocked and allowed through, even with the background Expiry Sweeper disabled.
+**Given** an IP (`198.51.100.10`) has an active ban with a short duration (e.g. `BAN_DURATION_SECONDS=2`),  
+**When** the exact expiration timestamp is reached (`now >= until`),  
+**Then** the IP is immediately unblocked and allowed through on the next request without delay, even with the background Expiry Sweeper disabled.
 
 - **Automated pytest execution**:
   - Command: `pytest -v tests/test_killer_3_exact_expiry.py`
-  - How it runs: Configures `BAN_DURATION_SECONDS=2`, disables or mocks the background sweeper to prove independence, triggers a ban for IP `198.51.100.10`, verifies `HTTP 403` during the 2-second ban, sleeps 2.1 seconds, and immediately asserts the next request returns `HTTP 200 OK` (or `401` on invalid credentials, but not `403`).
+  - How it runs: Configures `BAN_DURATION_SECONDS=2` and stops or mocks the background sweeper to prove independence. Triggers a ban for `198.51.100.10`, asserts `HTTP 403 Forbidden` while $t < until$, sleeps 2.1 seconds, and immediately asserts the next request is no longer blocked (returns `HTTP 200 OK` or `401 Unauthorized` on bad password, but never `403`).
 - **Manual demo script execution**:
   - Command: `bash scripts/demo_killer_3.sh`
-  - How it runs: Performs brute force with 2-second ban duration, shows 403 response, pauses for 2 seconds, and demonstrates immediate access restored upon expiration.
+  - How it runs: Starts server with `TRUST_PROXY=true` and `BAN_DURATION_SECONDS=2`. Simulates brute force using `-H "X-Forwarded-For: 198.51.100.10"`, displays `HTTP 403 Forbidden`, waits 2 seconds, and issues another `curl` request showing immediate access restoration (`200 OK`) as soon as the ban window expires.
 
 ---
 
 ### AI Explainer Acceptance Criteria
 
-- **When `AI_API_KEY` is not set**: Sentinel starts cleanly, logs an info notice that AI explanation is disabled, and all detection, banning, and unblocking functions execute without error.
-- **When `AI_API_KEY` is set**: When an alert is created, the system calls the LLM to generate an explanation of the attack pattern, saving it to the `alert.ai_explanation` field.
+**Given** the `AI_API_KEY` configuration is not set in `.env`,  
+**When** the Sentinel service starts and creates an alert,  
+**Then** the service logs an informational notice that AI explanation is disabled, saves the alert with `ai_explanation = null`, and continues normal detection and banning operations.
+
+**Given** the `AI_API_KEY` configuration is set in `.env`,  
+**When** an attack threshold is reached and an alert is created,  
+**Then** Sentinel sends the incident context to the external LLM API and saves the resulting plain-English summary to `alert.ai_explanation`.
+
+---
 
 ### Admin Visibility Acceptance Criteria
 
-- `GET /v1/decisions` returns active bans with IP, scenario, and expiry time.
-- `GET /v1/alerts` returns all generated alerts and their incident details.
+**Given** active bans and historical alerts exist in SQLite,  
+**When** an administrator sends authenticated `GET` requests to `/v1/decisions` and `/v1/alerts` with `X-Api-Key`,  
+**Then** Sentinel returns JSON arrays containing active bans (with `ip`, `scenario`, `until`) and recorded alerts.
