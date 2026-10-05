@@ -4,115 +4,104 @@
 
 ## 1. Problem
 
-During result week, the university portal is overwhelmed by bots guessing student passwords. These brute-force attacks degrade service for legitimate students trying to access their results. The university has no automated system to detect and block attacking IPs in real time.
+During result week, the university portal is overwhelmed by bots guessing student passwords. These brute-force attacks degrade service for legitimate students trying to access their results. The university needs a reliable, lightweight system to detect and block attacking IPs in real time with exact ban expiration.
 
 ---
 
 ## 2. Target User
 
-University IT administrators responsible for keeping the student result portal available and secure during high-traffic periods.
+University IT administrators responsible for keeping the student result portal available, secure, and responsive during high-traffic periods.
 
 ---
 
 ## 3. Problem Statement
 
-"For university IT administrators who struggle with bot-driven brute-force attacks during result week, Sentinel Intrusion Detection automatically reads server logs, detects attack patterns, and bans attacking IPs with precise automatic expiry, unlike CrowdSec which relies on query-time-only expiry with no proactive unblock notification and offers no AI-powered threat explanation."
+"For university IT administrators who struggle with bot-driven brute-force attacks during result week, Sentinel Intrusion Detection automatically reads server logs, detects attack patterns, and bans attacking IPs with precise automatic expiry, unlike CrowdSec which relies on query-time-only polling with no proactive unblock notification and offers no AI-powered threat explanation."
 
 ---
 
 ## 4. Core Flow
 
-1. The university portal web server writes authentication logs (including failed logins) to a log file.
-2. Sentinel's **Log Watcher** tails the log file and emits raw log lines.
-3. The **Log Parser** transforms each raw line into a structured event (timestamp, IP, event type, username, etc.).
-4. The **Attack Detector** receives parsed events and maintains per-IP sliding time windows. It evaluates configured scenarios (e.g., "10 failed logins from one IP in 60 seconds").
-5. When a scenario threshold is exceeded, the detector creates an **Alert** and a **Ban Decision** with a defined duration.
-6. The decision is stored in the database with an exact expiration timestamp.
-7. The **Blocker** component enforces active bans. It checks the decision store before allowing or rejecting requests.
-8. When a decision's expiration time is reached, the Blocker stops blocking that IP. The system proactively removes or invalidates the enforcement.
-9. An optional **AI Threat Explainer** (when configured with an API key in .env) provides human-readable explanations of detected attack patterns. The system runs fully without this key.
+1. The university portal (**Demo Portal**) receives authentication attempts (`POST /login`) and writes structured log lines to `portal_auth.log`.
+2. Sentinel's **Log Watcher** tails the log file and emits raw log lines into an in-memory queue/channel.
+3. The **Log Parser** transforms each raw line into a structured event (`timestamp`, `ip`, `username`, `result`).
+4. The **Attack Detector** receives parsed events and maintains per-IP sliding time windows. It evaluates configured scenarios (e.g. `BAN_THRESHOLD` failed logins within `WINDOW_SECONDS`).
+5. When the threshold is exceeded, the detector creates an **Alert** and a **Ban Decision** with `until = now + BAN_DURATION_SECONDS` in SQLite.
+6. The **Blocker** middleware intercepts incoming requests to the portal. It checks SQLite for an active decision where `until > now`. If active, it immediately returns `HTTP 403 Forbidden` with the ban expiry timestamp.
+7. The moment `now >= until`, the request passes through cleanly. The **Expiry Sweeper** cleans up stale database records in the background.
 
 ---
 
-## 5. Features (MoSCoW)
+## 5. Scope Boundaries
 
 ### Must Have
+- **M1**: Demo Portal with `POST /login` validating seeded credentials and writing structured logs to `portal_auth.log`.
+- **M2**: ASGI Blocker middleware checking `until > now` on every request and returning HTTP 403 with `until`.
+- **M3**: Tail-based log watcher and parser for `portal_auth.log`.
+- **M4**: Sliding-window brute force detector (configurable `BAN_THRESHOLD` and `WINDOW_SECONDS`).
+- **M5**: Decision storage in SQLite with exact `until` timestamp.
+- **M6**: Expiry sweeper cleaning up expired decisions.
+- **M7**: Configurable client IP resolution (`TRUST_PROXY` support).
+- **M8**: Admin REST API to query alerts and active bans.
+- **M9**: Optional AI Explainer generating threat explanations when `AI_API_KEY` is present.
 
-- **M1**: Tail and read server log files in real time.
-- **M2**: Parse log lines into structured events with at minimum: timestamp, source IP, event type (e.g., failed_login), username.
-- **M3**: Configurable brute-force detection scenario: N failed logins from one IP within T seconds triggers a ban.
-- **M4**: Store ban decisions with exact expiration timestamps.
-- **M5**: Enforce bans — blocked IPs cannot access the portal while the ban is active.
-- **M6**: Automatic unblock — the ban is lifted exactly when it expires, not on the next poll cycle.
-- **M7**: Isolation — a ban on one IP does not affect any other IP.
-- **M8**: Admin visibility — an admin can view current alerts and active bans.
-
-### Should Have
-
-- **S1**: AI-powered threat explanation that describes detected attacks in plain English (requires API key in .env; system works without it).
-- **S2**: Admin API or CLI to manually add/remove bans.
-- **S3**: Configurable ban duration.
-- **S4**: Logging of all detection and enforcement events for audit.
-
-### Could Have
-
-- **C1**: Dashboard web UI for viewing alerts and bans.
-- **C2**: Support for multiple log formats.
-- **C3**: Email or webhook notifications on new bans.
-
-### Won't Have
-
-- **W1**: Community/crowd-sourced threat intelligence (CrowdSec CAPI equivalent).
-- **W2**: Multi-machine agent coordination.
-- **W3**: Support for non-IP scope (ranges, ASNs, etc.).
-- **W4**: WAF or application-level security rules.
+### Out of Scope
+- Modifying third-party university portal legacy code.
+- Replacing external web servers (Nginx/Apache) or load balancers.
+- GeoIP ASN enrichment.
+- CrowdSec CAPI community threat intelligence sharing.
 
 ---
 
-## 6. Out of Scope
+## 6. Acceptance Criteria & Killer Test Execution
 
-- Modifying the university portal application itself.
-- Replacing the web server or proxy.
-- GeoIP enrichment.
-- Container or cloud-native deployment orchestration.
-- TLS mutual authentication between components.
-
----
-
-## 7. Acceptance Criteria
+The system's correctness is validated through three Killer Tests, each runnable via an automated `pytest` test and a standalone manual demo script.
 
 ### Killer Test 1 — Brute-Force Detection
 
-**Given** one IP generates 10 failed login events within one minute,
-**When** the tenth failed login is processed,
-**Then** that IP is banned.
+**Scenario**: One attacker IP generates 10 failed login attempts within 60 seconds (`BAN_THRESHOLD=10`, `WINDOW_SECONDS=60`). Upon the 10th failure, the IP is automatically banned. Subsequent requests return `HTTP 403 Forbidden` with the ban expiry time.
+
+- **Automated pytest execution**:
+  - Command: `pytest -v tests/test_killer_1_brute_force.py`
+  - How it runs: The test initializes an in-memory or test SQLite database, mounts the Blocker middleware and Demo Portal, sends 10 consecutive invalid `POST /login` requests with `client.host = "198.51.100.10"`, processes log pipeline events, and verifies that the 11th request returns `403 Forbidden` with a JSON body containing `{"error": "IP is banned", "ip": "198.51.100.10", "until": "..."}`.
+- **Manual demo script execution**:
+  - Command: `bash scripts/demo_killer_1.sh`
+  - How it runs: Starts the Sentinel server (`uvicorn app.main:app`), uses `curl` to issue 10 failed login attempts against `http://localhost:8000/login` with attacker IP header or socket, and displays the 11th request being blocked with `HTTP 403` and the ban end time.
+
+---
 
 ### Killer Test 2 — Innocent Bystander Isolation
 
-**Given** an attacker IP is generating failed logins while a normal user is logging in from another IP,
-**When** the attack threshold is reached,
-**Then** only the attacking IP is banned and the normal user's IP remains unaffected.
+**Scenario**: While an attacker IP is generating failed logins and gets banned, an innocent user logging in from a distinct IP is completely unaffected and continues to authenticate successfully.
+
+- **Automated pytest execution**:
+  - Command: `pytest -v tests/test_killer_2_bystander_isolation.py`
+  - How it runs: Attacker IP (`198.51.100.10`) sends 10 failed logins and is banned. Concurrently or immediately after, legitimate user IP (`203.0.113.50`) sends a valid `POST /login` (`student:secret2024`). The test verifies that the legitimate request returns `HTTP 200 OK` (`Login successful`) and is never blocked.
+- **Manual demo script execution**:
+  - Command: `bash scripts/demo_killer_2.sh`
+  - How it runs: Script triggers 10 failed attempts from IP A (banned), then issues `curl` from IP B with valid credentials, verifying IP A receives `403 Forbidden` while IP B receives `200 OK`.
+
+---
 
 ### Killer Test 3 — Exact Expiry
 
-**Given** an IP has an active ban with a defined expiration,
-**When** the exact expiration time is reached,
-**Then** the IP is no longer blocked.
+**Scenario**: An IP is banned with a short duration (e.g. `BAN_DURATION_SECONDS=2`). While $t < until$, requests return `HTTP 403`. Exactly when $t \ge until$, the IP is immediately unblocked and allowed through, even with the background Expiry Sweeper disabled.
 
-### AI Explainer Availability
+- **Automated pytest execution**:
+  - Command: `pytest -v tests/test_killer_3_exact_expiry.py`
+  - How it runs: Configures `BAN_DURATION_SECONDS=2`, disables or mocks the background sweeper to prove independence, triggers a ban for IP `198.51.100.10`, verifies `HTTP 403` during the 2-second ban, sleeps 2.1 seconds, and immediately asserts the next request returns `HTTP 200 OK` (or `401` on invalid credentials, but not `403`).
+- **Manual demo script execution**:
+  - Command: `bash scripts/demo_killer_3.sh`
+  - How it runs: Performs brute force with 2-second ban duration, shows 403 response, pauses for 2 seconds, and demonstrates immediate access restored upon expiration.
 
-**Given** the AI API key is not set in .env,
-**When** the system starts,
-**Then** the system runs normally; AI explanations are absent but all detection, banning, and unblocking work correctly.
+---
 
-### AI Explainer Functionality
+### AI Explainer Acceptance Criteria
 
-**Given** the AI API key is set in .env,
-**When** a new alert is created,
-**Then** the system generates a human-readable explanation of the attack pattern associated with the alert.
+- **When `AI_API_KEY` is not set**: Sentinel starts cleanly, logs an info notice that AI explanation is disabled, and all detection, banning, and unblocking functions execute without error.
+- **When `AI_API_KEY` is set**: When an alert is created, the system calls the LLM to generate an explanation of the attack pattern, saving it to the `alert.ai_explanation` field.
 
-### Admin Visibility
+### Admin Visibility Acceptance Criteria
 
-**Given** there are active bans and past alerts,
-**When** an admin queries the system (via API or CLI),
-**Then** the admin sees a list of active bans with IP, reason, and expiration, and a list of alerts with scenario and source IP.
+- `GET /v1/decisions` returns active bans with IP, scenario, and expiry time.
+- `GET /v1/alerts` returns all generated alerts and their incident details.

@@ -4,7 +4,10 @@
 
 ## Overview
 
-This document defines the minimum data model needed for our rebuild. It does not copy CrowdSec's schema but is informed by the observations. The model is designed to support the three Killer Tests.
+This document defines the SQLite schema and data entities for Sentinel. The model supports the three Killer Tests and is optimized for synchronous, zero-delay ban enforcement via the Blocker middleware and background hygiene via the Expiry Sweeper.
+
+- **Stack Engine**: SQLite 3 (using WAL journal mode for concurrent read/write performance).
+- **Driver**: Python standard library `sqlite3` or `aiosqlite` with typed data transfer objects (Pydantic models).
 
 ---
 
@@ -59,123 +62,100 @@ erDiagram
 
 ### 1. EVENT
 
-**Purpose**: Represents a single parsed log event (e.g., one failed login attempt).
+**Purpose**: Stores parsed log entries from `portal_auth.log`.
 
-| Field | Type | Required | Default | Constraints | Notes |
+| Field | Type | Required | Default | Constraints | Description |
 |---|---|---|---|---|---|
-| id | integer | yes | auto-increment | PK | |
-| timestamp | datetime | yes | | | When the event occurred in the original log |
-| source_ip | string | yes | | indexed | The IP address that generated this event |
-| event_type | string | yes | | indexed | e.g., "failed_login", "successful_login" |
-| username | string | no | null | | The username involved, if applicable |
-| raw_line | text | no | null | | The original raw log line for audit |
-| created_at | datetime | yes | now() | immutable | When this record was created |
-| alert_id | integer | no | null | FK → ALERT.id | Set when this event is part of an alert |
+| `id` | INTEGER | yes | AUTOINCREMENT | PRIMARY KEY | Unique event identifier |
+| `timestamp` | TEXT | yes | | ISO 8601 string | When the auth attempt occurred |
+| `source_ip` | TEXT | yes | | INDEXED | Client IP extracted from socket / header |
+| `event_type` | TEXT | yes | | INDEXED | `failed_login` or `successful_login` |
+| `username` | TEXT | no | NULL | | Username submitted during login |
+| `raw_line` | TEXT | no | NULL | | Full original log line |
+| `created_at` | TEXT | yes | CURRENT_TIMESTAMP | | Creation timestamp |
+| `alert_id` | INTEGER | no | NULL | FOREIGN KEY → ALERT(id) | Associated alert if part of an incident |
 
 **Indexes**:
-- (source_ip, timestamp) — supports the sliding window query for Killer Test 1
-- (event_type) — supports filtering by event type
-- (alert_id) — supports retrieving events for an alert
-
-**Relationships**:
-- Many-to-one with ALERT (via alert_id foreign key). An event may optionally belong to an alert. Inspired by CrowdSec's Event → Alert edge (Evidence: pkg/database/ent/schema/event.go:31-37 [Confirmed]).
+- `CREATE INDEX idx_event_ip_time ON event(source_ip, timestamp);`
+- `CREATE INDEX idx_event_alert_id ON event(alert_id);`
 
 ---
 
 ### 2. ALERT
 
-**Purpose**: Represents a detected attack pattern (e.g., "brute-force from 192.168.1.100").
+**Purpose**: Records detected intrusion events and security incidents.
 
-| Field | Type | Required | Default | Constraints | Notes |
+| Field | Type | Required | Default | Constraints | Description |
 |---|---|---|---|---|---|
-| id | integer | yes | auto-increment | PK | |
-| scenario | string | yes | | indexed | Name of the scenario that triggered (e.g., "brute_force_login") |
-| source_ip | string | yes | | indexed | The attacking IP |
-| event_count | integer | yes | | | Number of events that contributed to this alert |
-| started_at | datetime | yes | | | Timestamp of the first event in the window |
-| stopped_at | datetime | yes | | | Timestamp of the last event (the trigger event) |
-| message | string | no | null | | Human-readable description |
-| ai_explanation | text | no | null | | AI-generated explanation (only if AI key is configured) |
-| created_at | datetime | yes | now() | immutable | When this record was created |
+| `id` | INTEGER | yes | AUTOINCREMENT | PRIMARY KEY | Unique alert identifier |
+| `scenario` | TEXT | yes | | INDEXED | e.g. `brute_force_login` |
+| `source_ip` | TEXT | yes | | INDEXED | Attacking IP address |
+| `event_count` | INTEGER | yes | | | Number of failed events in window |
+| `started_at` | TEXT | yes | | ISO 8601 string | First failed event in detection window |
+| `stopped_at` | TEXT | yes | | ISO 8601 string | Trigger event timestamp |
+| `message` | TEXT | no | NULL | | Summary message |
+| `ai_explanation`| TEXT | no | NULL | | AI-generated summary (if AI_API_KEY set) |
+| `created_at` | TEXT | yes | CURRENT_TIMESTAMP | | Alert creation timestamp |
 
 **Indexes**:
-- (scenario)
-- (source_ip)
-- (created_at)
-
-**Relationships**:
-- One-to-many with DECISION (an alert can produce one or more decisions). Inspired by CrowdSec's Alert → Decision edge with CASCADE delete (Evidence: pkg/database/ent/schema/alert.go:64-67 [Confirmed]).
-- One-to-many with EVENT (an alert groups the events that triggered it). Inspired by CrowdSec's Alert → Event edge (Evidence: pkg/database/ent/schema/alert.go:68-71 [Confirmed]).
+- `CREATE INDEX idx_alert_source_ip ON alert(source_ip);`
+- `CREATE INDEX idx_alert_created_at ON alert(created_at);`
 
 ---
 
 ### 3. DECISION
 
-**Purpose**: Represents an active ban. The core enforcement record.
+**Purpose**: Core enforcement records for bans. Evaluated by Blocker middleware on every incoming request.
 
-| Field | Type | Required | Default | Constraints | Notes |
+| Field | Type | Required | Default | Constraints | Description |
 |---|---|---|---|---|---|
-| id | integer | yes | auto-increment | PK | |
-| scope | string | yes | | | Always "ip" for our rebuild |
-| value | string | yes | | indexed | The banned IP address |
-| type | string | yes | "ban" | | Decision type (ban, captcha, etc. — we only use "ban") |
-| scenario | string | yes | | | Which scenario triggered this decision |
-| origin | string | yes | "sentinel" | | Origin of the decision |
-| until | datetime | yes | | indexed | Exact expiration timestamp. Critical for Killer Test 3. |
-| active | boolean | yes | true | indexed | Whether this decision is currently enforced. Set to false by expiry sweeper. |
-| created_at | datetime | yes | now() | immutable | When this record was created |
-| alert_id | integer | yes | | FK → ALERT.id, ON DELETE CASCADE | The alert that produced this decision |
+| `id` | INTEGER | yes | AUTOINCREMENT | PRIMARY KEY | Unique decision identifier |
+| `scope` | TEXT | yes | "ip" | | Target scope (always `"ip"`) |
+| `value` | TEXT | yes | | INDEXED | Banned IP address |
+| `type` | TEXT | yes | "ban" | | Decision type (`"ban"`) |
+| `scenario` | TEXT | yes | | | Triggering scenario name |
+| `origin` | TEXT | yes | "sentinel" | | Originator of decision |
+| `until` | TEXT | yes | | INDEXED | Exact ISO 8601 expiration timestamp |
+| `active` | INTEGER | yes | 1 | INDEXED | 1 = active, 0 = expired/revoked |
+| `created_at` | TEXT | yes | CURRENT_TIMESTAMP | | Record creation timestamp |
+| `alert_id` | INTEGER | yes | | FOREIGN KEY → ALERT(id) ON DELETE CASCADE | Parent alert |
 
 **Indexes**:
-- (value, active) — supports "is this IP currently banned?" query for the Blocker
-- (until, active) — supports the Expiry Sweeper finding decisions to expire
-- (alert_id) — supports retrieving decisions for an alert
-
-**Unique constraints**: None. The same IP can be banned multiple times by different scenarios.
-
-**Relationships**:
-- Many-to-one with ALERT (via alert_id foreign key). Inspired by CrowdSec's Decision → Alert edge (Evidence: pkg/database/ent/schema/decision.go:45-51 [Confirmed]).
-
-**Key design difference from CrowdSec**: CrowdSec relies solely on query-time filtering (WHERE until > now(), Evidence: pkg/database/decisions.go:33 [Confirmed]). Our model adds an explicit `active` boolean that is set to false by the Expiry Sweeper, enabling proactive enforcement removal. The Blocker checks both `active = true` AND `until > now()` for defense in depth.
+- `CREATE INDEX idx_decision_enforce ON decision(value, until);`
+- `CREATE INDEX idx_decision_active_until ON decision(active, until);`
 
 ---
 
-## How the Data Model Supports the Killer Tests
+## Critical Query Patterns
 
-### Killer Test 1 — 10 failed logins → ban
-
-The Attack Detector queries recent EVENTs:
+### 1. Middleware Enforcement Check (Per-Request)
+On every request, the Blocker evaluates whether the client IP has an unexpired ban:
+```sql
+SELECT until FROM decision 
+WHERE value = :client_ip 
+  AND type = 'ban' 
+  AND until > :current_timestamp_utc
+ORDER BY until DESC 
+LIMIT 1;
 ```
-SELECT COUNT(*) FROM event
-WHERE source_ip = ? AND event_type = 'failed_login' AND timestamp > (now - 60s)
+If a row is returned, the middleware returns `HTTP 403` with the `until` value. This ensures **exact, sub-second unblocking** the moment `now >= until`.
+
+### 2. Expiry Sweeper Cleanup (Periodic)
+The background sweeper updates expired rows to keep indexes clean:
+```sql
+UPDATE decision 
+SET active = 0 
+WHERE active = 1 
+  AND until <= :current_timestamp_utc;
 ```
-(Or equivalently, maintains an in-memory sliding window.)
+The sweeper is strictly for cleanup and database hygiene; enforcement does not depend on it.
 
-When count reaches 10, it creates:
-1. An ALERT with scenario="brute_force_login", source_ip, event_count=10.
-2. A DECISION with value=<IP>, until=now()+ban_duration, active=true.
-3. Links the 10 EVENTs to the ALERT via alert_id.
-
-### Killer Test 2 — innocent bystander isolation
-
-The sliding window query and all decision lookups are keyed by source_ip. IP "A" reaching the threshold only creates a DECISION with value="A". IP "B" has its own independent event stream and decision set.
-
-### Killer Test 3 — exact expiry
-
-The Expiry Sweeper periodically runs:
+### 3. Attack Detection Sliding Window
+When processing new events, the detector counts failed attempts within the sliding window:
+```sql
+SELECT COUNT(*) FROM event 
+WHERE source_ip = :ip 
+  AND event_type = 'failed_login' 
+  AND timestamp >= :window_start_utc;
 ```
-UPDATE decision SET active = false WHERE active = true AND until <= now()
-```
-Additionally, the Blocker's check query always includes `until > now()`:
-```
-SELECT COUNT(*) FROM decision WHERE value = ? AND active = true AND until > now()
-```
-This dual check ensures the ban is never enforced past its expiration, whether the sweeper has run yet or not.
-
----
-
-## Decisions Not Yet Made
-
-- **Database engine**: Unknown. SQLite is likely for single-server deployment; PostgreSQL is an option.
-- **Event retention policy**: Unknown. How long to keep old events and alerts.
-- **Maximum raw_line length**: Unknown. May follow CrowdSec's 8191-char limit (Evidence: pkg/database/ent/schema/event.go:25 [Confirmed]) or use a different value.
+(Maintained via in-memory sliding window queue and flushed to SQLite upon alert generation).

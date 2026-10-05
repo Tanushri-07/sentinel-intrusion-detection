@@ -8,11 +8,11 @@
 
 | Property | Detail |
 |---|---|
-| **Gap** | Decision expiry is enforced only at query time via a WHERE until > now() filter. There is no proactive mechanism to notify bouncers when a decision expires. A bouncer only discovers a decision has expired on its next poll. |
+| **Gap** | Decision expiry is enforced only at query time via a `WHERE until > now()` filter. There is no proactive mechanism to notify bouncers when a decision expires. A bouncer only discovers a decision has expired on its next poll cycle. |
 | **Type** | Correctness / UX |
-| **Evidence** | pkg/database/decisions.go:33 — `decision.UntilGT(now)` [Confirmed]. pkg/apiserver/controllers/v1/decisions.go:23 — remaining duration computed as Until.Sub(time.Now().UTC()) [Confirmed]. No background expiry job that pushes notifications was found. |
+| **Evidence** | `pkg/database/decisions.go:33` — `decision.UntilGT(now)` [Confirmed]. `pkg/apiserver/controllers/v1/decisions.go:23` — remaining duration computed as `Until.Sub(time.Now().UTC())` [Confirmed]. No background expiry job that pushes notifications was found. |
 | **Who it hurts** | End users whose IPs are banned. If a bouncer polls every 30 seconds, a ban could persist up to 30 seconds past its intended expiry. |
-| **Suggested fix** | Add a proactive expiry sweeper that marks decisions as inactive and, if possible, pushes unblock notifications to the enforcement layer. |
+| **Suggested fix** | Add proactive request-time exact evaluation in middleware so that bans vanish the millisecond `until` is reached, with a background sweeper cleaning stale records. |
 | **Severity** | Medium |
 
 ### Gap 2: Commented-Out v2 API
@@ -21,72 +21,77 @@
 |---|---|
 | **Gap** | The entire v2 API route group is commented out and non-functional. |
 | **Type** | Docs drift / Dead code |
-| **Evidence** | pkg/apiserver/controllers/controller.go:161-193 — entire block wrapped in `/* ... */` [Confirmed] |
+| **Evidence** | `pkg/apiserver/controllers/controller.go:161-193` — entire block wrapped in `/* ... */` [Confirmed] |
 | **Who it hurts** | Maintainers who may expect v2 to be available. |
-| **Suggested fix** | Remove the dead code or implement it. |
+| **Suggested fix** | Remove dead code or implement cleanly in new rebuild. |
 | **Severity** | Low |
 
 ### Gap 3: No Rate Limiting on Machine Registration
 
 | Property | Detail |
 |---|---|
-| **Gap** | The POST /v1/watchers endpoint (machine registration) has a body size limit but no per-IP rate limiting. An attacker could rapidly create many machine registrations. |
+| **Gap** | The `POST /v1/watchers` endpoint (machine registration) has a body size limit but no per-IP rate limiting. An attacker could rapidly create many machine registrations. |
 | **Type** | Security |
-| **Evidence** | pkg/apiserver/controllers/controller.go:118 — only `unauthBodyLimit` middleware is applied, no rate limiter [Likely] |
+| **Evidence** | `pkg/apiserver/controllers/controller.go:118` — only `unauthBodyLimit` middleware is applied, no rate limiter [Likely] |
 | **Who it hurts** | LAPI operators; could be used for resource exhaustion. |
-| **Suggested fix** | Add per-IP rate limiting on unauthenticated endpoints. |
+| **Suggested fix** | Add per-IP rate limiting or eliminate machine registration altogether in a unified single-process architecture. |
 | **Severity** | Medium |
 
 ### Gap 4: No Bouncer-to-Decision Relationship in Database
 
 | Property | Detail |
 |---|---|
-| **Gap** | The Bouncer entity has no edge to Decision or Alert. There is no database-level audit trail of which decisions a specific bouncer has received or is enforcing. The stream_cursor field partially tracks position but not per-decision acknowledgment. |
+| **Gap** | The Bouncer entity has no edge to Decision or Alert. There is no database-level audit trail of which decisions a specific bouncer has received or is enforcing. |
 | **Type** | Data / Observability |
-| **Evidence** | pkg/database/ent/schema/bouncer.go:48-50 — `Edges() returns nil` [Confirmed]. Stream cursor at bouncer.go:36 [Confirmed]. |
-| **Who it hurts** | Operators trying to debug enforcement issues (e.g., "did my bouncer actually receive this decision?"). |
-| **Suggested fix** | Add an audit log or join table tracking bouncer-decision delivery. |
+| **Evidence** | `pkg/database/ent/schema/bouncer.go:48-50` — `Edges() returns nil` [Confirmed]. Stream cursor at `bouncer.go:36` [Confirmed]. |
+| **Who it hurts** | Operators trying to debug enforcement issues. |
+| **Suggested fix** | Use an inline middleware blocker that directly accesses the decision store. |
 | **Severity** | Low |
 
 ---
 
 ## Selected Improvements for Our Rebuild
 
-### Improvement 1: Gap Fix — Proactive Decision Expiry (from Gap 1)
+The Sentinel rebuild selects one architectural Gap Fix and one high-value Differentiator, both implementable within the locked Python 3.11+ / FastAPI / SQLite / pytest stack.
 
-**What we fix**: CrowdSec's query-time-only expiry means bans can persist past their intended expiration until the next bouncer poll.
+---
 
-**How Sentinel fixes it**: Sentinel adds an Expiry Sweeper — a background task that runs every few seconds, finds decisions whose `until` timestamp has passed, marks them as `active = false`, and notifies the Blocker to stop enforcement immediately. Additionally, the Blocker itself always checks `until > now()` on every request for defense in depth.
+### Improvement 1: Gap Fix — Exact Request-Time Expiry & Sweeper Cleanup
 
-**Why it matters**: For the university portal, students should be unblocked exactly when their ban expires. A 30-second delay is unacceptable during result week when thousands of students are trying to access their results.
+**What we fix**: CrowdSec relies on polling bouncers that query decisions at coarse intervals (e.g. 10–30s). When a ban expires, an innocent or unbanned user remains blocked until the bouncer's next poll.
 
-**How it will be demonstrated**: Killer Test 3 — set a ban with a short duration (e.g., 10 seconds), verify that requests are blocked during the ban, and verify that requests succeed immediately after the expiration timestamp (within 1 second, not 30).
+**How Sentinel fixes it**:
+1. **Request-Time Dynamic Check**: The inline Blocker ASGI middleware checks `until > now` on every incoming HTTP request. The exact millisecond `now >= until`, the request passes through cleanly with `HTTP 200 OK` (or appropriate application response), achieving zero-delay ban expiration.
+2. **Background Expiry Sweeper**: A periodic background task handles database hygiene by updating past records (`UPDATE decision SET active = 0 WHERE until <= :now`). The sweeper is purely for cleanup; the request-time check ensures exact unblocking whether the sweeper runs or not.
+
+**Why it matters**: For a university portal during result week, legitimate students must not suffer extended lockouts due to polling lag.
+
+**Demonstrated by Killer Test 3**:
+- Automated test: `pytest -v tests/test_killer_3_exact_expiry.py` with `BAN_DURATION_SECONDS=2` and sweeper stopped, demonstrating immediate unblocking upon expiration.
+- Manual script: `bash scripts/demo_killer_3.sh`.
 
 ---
 
 ### Improvement 2: Differentiator — AI-Powered Threat Explanation
 
-**What the original does not have**: CrowdSec provides alerts with scenario names and source IPs, but no AI-generated, human-readable explanation of what happened and why it is suspicious. The alert data is structured but requires technical knowledge to interpret.
+**What the original lacks**: CrowdSec produces alert records with numeric scenario IDs and source IPs, but requires human operators to manually interpret raw attack details.
 
-**What Sentinel adds**: When an AI API key is configured in `.env`, Sentinel calls an LLM (e.g., OpenAI or Gemini) to generate a plain-English explanation of each detected attack. The explanation is stored with the alert and available via the Admin API.
+**What Sentinel adds**: An optional AI Threat Explainer component that calls an external LLM API to produce a concise, plain-English explanation of detected attack patterns.
 
-Example output:
-> "This alert detected a brute-force login attack from IP 192.168.1.100. The attacker attempted 10 different passwords for user 'student_2024' within 45 seconds. This pattern is consistent with automated credential-stuffing, likely from a bot. The IP has been banned for 4 hours."
+**Design & Portability**:
+- **Fully Optional**: The Sentinel service operates completely without an AI key. If `AI_API_KEY` is empty or missing in `.env`, the system functions normally; alerts are saved with `ai_explanation = null`.
+- **Environment Driven**: Key is configured via `AI_API_KEY` in `.env`. No hardcoded credentials or external dependencies exist in source code.
+- **Admin Visibility**: Admins can view explanations via `GET /v1/alerts/{id}/explain` or within the alert payload.
 
-**Why it matters to the university portal user**: University IT administrators may not be security experts. During the stress of result week, a clear explanation helps them understand what happened, confirm the ban is appropriate, and decide whether to escalate (e.g., report the IP to the ISP).
-
-**How it will be demonstrated**:
-1. Start Sentinel with AI key in .env.
-2. Trigger a brute-force scenario.
-3. Call GET /v1/alerts/:id/explain and see the AI explanation.
-4. Start Sentinel without the AI key.
-5. Verify the system detects and bans correctly; the explanation field is null.
+**Demonstrated by**:
+- Alert creation with `AI_API_KEY` populated attaches an explanation to the incident report.
+- Alert creation without `AI_API_KEY` logs a graceful fallback notice and continues uninterrupted.
 
 ---
 
 ## Summary
 
-| # | Improvement | Source |
-|---|---|---|
-| 1 | Proactive decision expiry via Expiry Sweeper | Gap Fix (Gap 1) |
-| 2 | AI-powered threat explanation | Differentiator (new feature) |
+| # | Improvement | Category | Stack / Implementation |
+|---|---|---|---|
+| 1 | Exact request-time ban expiry with sweeper cleanup | Gap Fix (Gap 1) | Blocker ASGI middleware evaluating `until > now` + SQLite background cleanup task |
+| 2 | AI-powered incident threat explanation | Differentiator | Optional LLM integration via `AI_API_KEY` in `.env` |
