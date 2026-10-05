@@ -1,0 +1,471 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Length 1307 >>
+stream
+0 0 0 rg
+0.06 0.09 0.16 rg
+0 0 960 540 re f
+0.15 0.39 0.92 rg
+40 500 880 4 re f
+0.12 0.16 0.23 rg
+850 455 70 28 re f
+BT
+/F1 12 Tf
+0.58 0.64 0.72 rg
+865 467 Td
+(1 / 5) Tj
+ET
+BT
+/F1 26 Tf
+0.97 0.98 0.99 rg
+50 460 Td
+(Sentinel Intrusion Detection) Tj
+ET
+BT
+/F1 14 Tf
+0.58 0.64 0.72 rg
+50 435 Td
+(Real-Time Brute-Force Defense for High-Traffic University Portals) Tj
+ET
+0.12 0.16 0.23 rg
+50 40 860 370 re f
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 380 Td
+(The Problem:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 360 Td
+(During result release week, university portals face aggressive bot brute-force attacks guessing student passwords.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 310 Td
+(Impact:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 290 Td
+(High volume of fraudulent login attempts exhausts server resources and degrades service for legitimate students.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 240 Td
+(Current Limitation:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 220 Td
+(Distributed intrusion prevention tools \(like CrowdSec\) introduce polling latency between bouncers and LAPI.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 170 Td
+(Sentinel's Mission:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 150 Td
+(A focused, single-process intrusion prevention system enforcing exact, zero-delay ban expiration at request-time.) Tj
+ET
+endstream
+endobj
+2 0 obj
+<< /Length 1446 >>
+stream
+0 0 0 rg
+0.06 0.09 0.16 rg
+0 0 960 540 re f
+0.15 0.39 0.92 rg
+40 500 880 4 re f
+0.12 0.16 0.23 rg
+850 455 70 28 re f
+BT
+/F1 12 Tf
+0.58 0.64 0.72 rg
+865 467 Td
+(2 / 5) Tj
+ET
+BT
+/F1 26 Tf
+0.97 0.98 0.99 rg
+50 460 Td
+(Solution & Core Flow) Tj
+ET
+BT
+/F1 14 Tf
+0.58 0.64 0.72 rg
+50 435 Td
+(Streamlined Detection-to-Enforcement Pipeline) Tj
+ET
+0.12 0.16 0.23 rg
+50 40 860 370 re f
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 380 Td
+(Demo Portal \(POST /login\):) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 360 Td
+(Authenticates against seeded credentials and emits one structured log line per attempt.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 310 Td
+(Exact Log Format:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 290 Td
+({timestamp} | ip={ip} | username={username} | result=success|fail appended to portal_auth.log.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 240 Td
+(Real-time Ingestion:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 220 Td
+(Async Log Watcher tails log file and feeds the Log Parser to emit structured event records.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 170 Td
+(Sliding-Window Detection:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 150 Td
+(Attack Detector tracks per-IP failure frequency within sliding time window \(WINDOW_SECONDS=60\).) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 100 Td
+(Instant Ban Creation:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 80 Td
+(When failures reach BAN_THRESHOLD=10, writes Alert and Decision records directly into SQLite.) Tj
+ET
+endstream
+endobj
+3 0 obj
+<< /Length 1477 >>
+stream
+0 0 0 rg
+0.06 0.09 0.16 rg
+0 0 960 540 re f
+0.15 0.39 0.92 rg
+40 500 880 4 re f
+0.12 0.16 0.23 rg
+850 455 70 28 re f
+BT
+/F1 12 Tf
+0.58 0.64 0.72 rg
+865 467 Td
+(3 / 5) Tj
+ET
+BT
+/F1 26 Tf
+0.97 0.98 0.99 rg
+50 460 Td
+(Architecture & Technology Stack) Tj
+ET
+BT
+/F1 14 Tf
+0.58 0.64 0.72 rg
+50 435 Td
+(Python 3.11+ | FastAPI | SQLite | pytest) Tj
+ET
+0.12 0.16 0.23 rg
+50 40 860 370 re f
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 380 Td
+(Unified Process Monolith:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 360 Td
+(No distributed agent/LAPI orchestration; all components communicate in-process with minimal overhead.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 310 Td
+(Blocker ASGI Middleware:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 290 Td
+(Positioned directly in front of Demo Portal; evaluates client IP on every incoming request.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 240 Td
+(Request-Time Enforcement:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 220 Td
+(Evaluates 'WHERE value = :ip AND until > :now' via composite index \(value, type, until\).) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 170 Td
+(403 Forbidden Response:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 150 Td
+(Banned requests are rejected immediately with JSON payload containing exact ban expiration \('until'\).) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 100 Td
+(Decoupled Expiry Sweeper:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 80 Td
+(Background task periodically cleans expired database records without affecting live access.) Tj
+ET
+endstream
+endobj
+4 0 obj
+<< /Length 1317 >>
+stream
+0 0 0 rg
+0.06 0.09 0.16 rg
+0 0 960 540 re f
+0.15 0.39 0.92 rg
+40 500 880 4 re f
+0.12 0.16 0.23 rg
+850 455 70 28 re f
+BT
+/F1 12 Tf
+0.58 0.64 0.72 rg
+865 467 Td
+(4 / 5) Tj
+ET
+BT
+/F1 26 Tf
+0.97 0.98 0.99 rg
+50 460 Td
+(The Three Killer Tests) Tj
+ET
+BT
+/F1 14 Tf
+0.58 0.64 0.72 rg
+50 435 Td
+(Rigorously Verified via Automated Pytest & Manual Demo Scripts) Tj
+ET
+0.12 0.16 0.23 rg
+50 40 860 370 re f
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 380 Td
+(Killer Test 1 \(Brute-Force Detection\):) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 360 Td
+(10 failed logins from 198.51.100.10 within 60s trigger ban; attempt #11 receives HTTP 403.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 310 Td
+(Killer Test 2 \(Innocent Bystander Isolation\):) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 290 Td
+(Attacker \(198.51.100.10\) is banned while innocent student \(203.0.113.50\) logs in with HTTP 200 OK.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 240 Td
+(Killer Test 3 \(Exact Expiry\):) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 220 Td
+(Short ban duration \(e.g. 2s\) proves ban lifts immediately at t > until via per-request check.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 170 Td
+(Dual Execution Modes:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 150 Td
+(Every test is verifiable both programmatically via pytest and interactively via demo curl scripts.) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Length 1346 >>
+stream
+0 0 0 rg
+0.06 0.09 0.16 rg
+0 0 960 540 re f
+0.15 0.39 0.92 rg
+40 500 880 4 re f
+0.12 0.16 0.23 rg
+850 455 70 28 re f
+BT
+/F1 12 Tf
+0.58 0.64 0.72 rg
+865 467 Td
+(5 / 5) Tj
+ET
+BT
+/F1 26 Tf
+0.97 0.98 0.99 rg
+50 460 Td
+(Improvements & Differentiator) Tj
+ET
+BT
+/F1 14 Tf
+0.58 0.64 0.72 rg
+50 435 Td
+(Clear Engineering Advancements Over Existing Solutions) Tj
+ET
+0.12 0.16 0.23 rg
+50 40 860 370 re f
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 380 Td
+(Gap Fix \(Exact Request-Time Expiry\):) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 360 Td
+(CrowdSec bouncers poll periodically, causing bans to linger past expiration. Sentinel's middleware eliminates polling delay.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 310 Td
+(Decoupled Maintenance:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 290 Td
+(Blocker middleware check makes unblocking millisecond-exact; the Sweeper is purely for database garbage collection.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 240 Td
+(Differentiator \(AI Threat Explainer\):) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 220 Td
+(Synthesizes attack patterns into plain-English incident narratives for IT administrators.) Tj
+ET
+BT
+/F1 13 Tf
+0.38 0.65 0.98 rg
+75 170 Td
+(Resilient & Optional:) Tj
+ET
+BT
+/F1 12 Tf
+0.90 0.93 0.96 rg
+75 150 Td
+(System operates with 100% functionality without an AI key; zero secrets or external dependencies required.) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+7 0 obj
+<< /Type /Page /Parent 12 0 R /MediaBox [0 0 960 540] /Contents 1 0 R /Resources << /Font << /F1 6 0 R >> >> >>
+endobj
+8 0 obj
+<< /Type /Page /Parent 12 0 R /MediaBox [0 0 960 540] /Contents 2 0 R /Resources << /Font << /F1 6 0 R >> >> >>
+endobj
+9 0 obj
+<< /Type /Page /Parent 12 0 R /MediaBox [0 0 960 540] /Contents 3 0 R /Resources << /Font << /F1 6 0 R >> >> >>
+endobj
+10 0 obj
+<< /Type /Page /Parent 12 0 R /MediaBox [0 0 960 540] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> >>
+endobj
+11 0 obj
+<< /Type /Page /Parent 12 0 R /MediaBox [0 0 960 540] /Contents 5 0 R /Resources << /Font << /F1 6 0 R >> >> >>
+endobj
+12 0 obj
+<< /Type /Pages /Kids [7 0 R 8 0 R 9 0 R 10 0 R 11 0 R] /Count 5 >>
+endobj
+13 0 obj
+<< /Type /Catalog /Pages 12 0 R >>
+endobj
+xref
+0 14
+0000000000 65535 f 
+0000000015 00000 n 
+0000001374 00000 n 
+0000002872 00000 n 
+0000004401 00000 n 
+0000005770 00000 n 
+0000007168 00000 n 
+0000007243 00000 n 
+0000007370 00000 n 
+0000007497 00000 n 
+0000007624 00000 n 
+0000007752 00000 n 
+0000007880 00000 n 
+0000007964 00000 n 
+trailer
+<< /Size 14 /Root 13 0 R >>
+startxref
+8015
+%%EOF
