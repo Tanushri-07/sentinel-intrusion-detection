@@ -11,9 +11,18 @@ Sentinel is a single-process intrusion detection and prevention system designed 
 ## Locked Technology Stack
 
 - **Runtime & Language**: Python 3.11+
-- **Web Framework**: FastAPI (with Starlette ASGI middleware & Uvicorn ASGI server)
-- **Database**: SQLite (local single-file database accessed via Python standard library `sqlite3` or an async SQLite driver)
-- **Testing Suite**: pytest (with `pytest-asyncio` / `httpx` for ASGI endpoint & middleware testing)
+- **Web Framework**: FastAPI (running on Uvicorn ASGI server as a single worker process)
+- **Database**: Local disk-backed SQLite database using Python standard-library `sqlite3` module (WAL journal mode enabled). Third-party ORMs or async SQLite drivers (SQLAlchemy, aiosqlite, Tortoise) are explicitly excluded.
+- **Production Dependencies**:
+  - `fastapi`
+  - `uvicorn[standard]`
+  - `pydantic`
+  - `pydantic-settings`
+  - `httpx`
+- **Testing Dependencies**:
+  - `pytest`
+  - `pytest-asyncio`
+- **No Extra Infrastructure**: Celery, Redis, RabbitMQ, external database servers, or distributed message queues are strictly forbidden.
 
 ---
 
@@ -23,13 +32,13 @@ Sentinel is a single-process intrusion detection and prevention system designed 
 |---|---|
 | **Demo Portal** | FastAPI application hosting simulated university portal endpoints, including `POST /login`. Validates credentials against a seeded demo user list and writes a structured auth log line per attempt to `portal_auth.log`. |
 | **Blocker (Middleware)** | FastAPI / ASGI middleware positioned in front of the Demo Portal and other protected routes. On every request, determines client IP, checks SQLite for an active decision (`until > now`), and returns `HTTP 403 Forbidden` with the ban expiry timestamp if banned. |
-| **Log Watcher** | Background task that tails the `portal_auth.log` file in real time and emits raw lines into the parsing pipeline. |
-| **Log Parser** | Transforms raw log lines into structured events (`timestamp`, `source_ip`, `username`, `result`). |
-| **Attack Detector** | Maintains in-memory per-IP sliding windows. Evaluates detection scenarios (`BAN_THRESHOLD` failed logins within `WINDOW_SECONDS`). On threshold breach, generates an Alert and a Ban Decision (`until = now + BAN_DURATION_SECONDS`) and writes them to SQLite. |
-| **Decision Store** | SQLite database tables (`event`, `alert`, `decision`) storing active and past decisions with exact expiration timestamps. |
-| **Admin API** | Authenticated REST endpoints (`/v1/decisions`, `/v1/alerts`, `/health`, etc.) for administrators to monitor alerts, query active bans, and manually unban IPs. |
-| **Expiry Sweeper** | Periodic background cleanup task that marks past decisions (`until <= now`) as inactive (`active = false`) for database hygiene. **Does not control enforcement**; request-time middleware check guarantees exact expiry. |
-| **AI Threat Explainer** | Optional component that calls an external LLM API to generate human-readable explanations of detected attacks when `AI_API_KEY` is present. |
+| **Log Watcher** | Polling background task (100 ms interval) that tails `portal_auth.log`, tracks file offset and inode replacement, and emits raw lines into the parser queue. |
+| **Log Parser** | Transforms raw log lines into structured events (`timestamp`, `source_ip`, `username`, `result`). Discards malformed lines with warnings. |
+| **Attack Detector** | Maintains ephemeral in-memory per-IP sliding deques of failed login timestamps. Evaluates `BAN_THRESHOLD` failed logins within `WINDOW_SECONDS`. On breach, creates exactly one Alert and one Decision, and immediately clears that IP's deque. |
+| **Decision Store** | SQLite database tables (`event`, `alert`, `decision`) storing active and past decisions with exact expiration timestamps, queried synchronously via Python's standard-library `sqlite3`. |
+| **Admin API** | REST endpoints (`/v1/decisions`, `/v1/alerts`, `/health`, etc.) protected by `X-Api-Key: <ADMIN_API_KEY>` (returning `401 Unauthorized` if invalid) for administrators to monitor alerts, query active bans, manually ban IPs (`POST /v1/decisions`), and unban IPs. |
+| **Expiry Sweeper** | Periodic background cleanup task that marks past decisions (`until <= now`) as inactive (`active = 0`) for database hygiene. **Does not control enforcement**; request-time middleware check guarantees exact expiry. |
+| **AI Threat Explainer** | Optional asynchronous background task calling Groq's OpenAI-compatible API (`llama-3.1-8b-instant`) to generate human-readable explanations for created alerts when `AI_API_KEY` is present. Never blocks ban creation or enforcement. |
 
 ---
 
@@ -37,7 +46,18 @@ Sentinel is a single-process intrusion detection and prevention system designed 
 
 The Demo Portal simulates the target web application (e.g. university result portal):
 - **Endpoint**: `POST /login`
-- **Request Payload**: JSON with `username` and `password`
+- **Request Payload**: JSON with `username` and `password`:
+  ```json
+  {
+    "username": "student",
+    "password": "secret2024"
+  }
+  ```
+- **FastAPI Schema Validation & Logging Rules**:
+  - If JSON is malformed, required fields (`username`, `password`) are missing, or fields fail schema validation, FastAPI immediately returns `HTTP 422 Unprocessable Entity`.
+  - In this case (`HTTP 422`), **DO NOT append any line to `portal_auth.log`** because the login handler was never entered.
+  - Usernames containing the pipe character `|` are rejected as invalid during login validation so that log delimiters remain strictly unambiguous.
+  - Passwords are NEVER logged (plaintext passwords must not appear in logs or databases).
 - **Seeded User List**: Credential validation checks against a hardcoded in-memory seeded dictionary:
   - `alice:password123`
   - `student:secret2024`
@@ -45,7 +65,7 @@ The Demo Portal simulates the target web application (e.g. university result por
 - **Response**:
   - `200 OK` with `{"status": "success", "message": "Login successful"}` if credentials match.
   - `401 Unauthorized` with `{"status": "fail", "detail": "Invalid username or password"}` if credentials do not match.
-- **Structured Log Output**: Every login attempt (both success and fail) MUST synchronously append exactly one line to `portal_auth.log` (`LOG_FILE_PATH`).
+- **Structured Log Output**: Every login request passing schema validation (both success and fail) MUST append exactly one line to `portal_auth.log` (`LOG_FILE_PATH`) with a single append operation followed by a newline.
 
 ### Exact Log Line Format
 
@@ -66,6 +86,69 @@ Example log lines:
 2026-10-05T22:30:05Z | ip=198.51.100.10 | username=student | result=success
 ```
 
+
+---
+
+## Log Watcher & Parser Specification
+
+1. **Process & Concurrency Model**:
+   - The application runs as a **single Uvicorn worker process** for all operations. Concurrent multi-process file writing is explicitly out of scope.
+   - The portal writes each complete log line with a single atomic append operation (`open(..., 'a').write(line + '\n')`).
+2. **File Initialization**:
+   - `portal_auth.log` (`LOG_FILE_PATH`) is automatically created during application startup if it does not already exist.
+3. **Polling Mechanism**:
+   - The Log Watcher runs as an `asyncio` background task using simple polling (polling interval: **100 ms**) rather than OS-specific filesystem notifications (`inotify`/`watchdog`).
+   - The watcher tracks its current file byte offset across polling iterations.
+   - **File Truncation**: If the file size becomes smaller than the tracked offset, the file was truncated/cleared; the watcher resets its offset to zero.
+   - **File Rotation / Replacement**: If the file's inode or file identity changes, the watcher detects the change, closes the old handle, opens the new file, and starts reading from byte offset zero.
+4. **Parsing & Malformed Line Handling**:
+   - The parser verifies that lines strictly follow `{timestamp} | ip={ip} | username={username} | result=success|fail`.
+   - If a line is malformed (e.g. invalid timestamp format, missing delimiters, extra tokens, invalid result token), the line is **discarded and a warning is emitted**.
+   - Malformed lines NEVER crash or stop the watcher task. Valid lines are transformed into structured events and passed to the detector queue.
+
+---
+
+## Attack Detector State & Reset Semantics
+
+1. **In-Memory Ephemeral State**:
+   - The detector maintains an in-memory `collections.deque` of failed-login timestamps partitioned by client IP.
+   - The detector state is **ephemeral**: it is NOT reconstructed from SQLite after application restart.
+   - SQLite `alert` and `decision` records remain durable across restarts.
+   - After restart, detection begins a fresh in-memory sliding window evaluated against newly observed log events.
+2. **Threshold Evaluation & Deque Clearing**:
+   - On each failed login event, timestamps older than `(current_event_time - WINDOW_SECONDS)` are pruned from the IP's deque, and the new failure timestamp is appended.
+   - When the count of failures in the deque reaches `BAN_THRESHOLD` (e.g. 10 failures):
+     1. Create **exactly one Alert** in SQLite for that threshold event.
+     2. Create **exactly one ban Decision** in SQLite with `until = now + BAN_DURATION_SECONDS`.
+     3. **Immediately clear that IP's deque** (`deque.clear()`).
+3. **Subsequent Attempts During Active Ban**:
+   - Failed attempts occurring from an IP while an active ban already exists in SQLite do NOT extend the existing ban and do NOT create additional alerts.
+   - Subsequent requests from that IP are blocked at request-time by the Blocker middleware with `HTTP 403 Forbidden` and do not reach the login handler while the ban is active.
+
+---
+
+## AI Threat Explainer Specification (Optional)
+
+1. **Strict Asynchronous Execution**:
+   - The AI Threat Explainer runs **only after** an Alert and Ban Decision are successfully committed to SQLite.
+   - It runs asynchronously as a background task (`asyncio.create_task`).
+   - It **NEVER blocks** ban creation, Alert creation, or Blocker enforcement.
+2. **Provider & Configuration**:
+   - **Provider**: Groq OpenAI-compatible chat-completions HTTP API (`https://api.groq.com/openai/v1/chat/completions`).
+   - **Model**: `llama-3.1-8b-instant`.
+   - **Authentication**: Sent via `Authorization: Bearer <AI_API_KEY>`.
+   - **Timeout**: Strict **5.0-second HTTP timeout**.
+   - **Retries**: Zero retries (no retries).
+3. **Context & Non-Secret Payload**:
+   - The AI task receives only non-secret alert context: Alert ID, source IP, scenario name, failure count, sliding window duration, and incident timestamp.
+   - No credentials, passwords, or internal application secrets are ever included.
+   - Never store or expose `AI_API_KEY` in logs or database tables.
+4. **Fallback & Failure Handling**:
+   - If `AI_API_KEY` is empty or omitted in `.env`, the background task is skipped, an informational notice is logged, and `alert.ai_explanation` remains `NULL`.
+   - If the HTTP request fails, times out, or returns a non-200 code, `alert.ai_explanation` remains `NULL`.
+   - Any AI failure is caught and logged; it MUST NEVER cause alert creation, ban decision creation, or enforcement to fail.
+5. **Output**:
+   - On success, the model returns a concise 1–2 sentence human-readable explanation of why the activity was suspicious, which is updated into `alert.ai_explanation` in SQLite.
 ---
 
 ## Blocker Middleware Specification & Exact Expiry
@@ -117,7 +200,7 @@ All runtime parameters are configured via environment variables (loaded via `pyd
 | `BAN_DURATION_SECONDS` | `300` | Duration of the ban in seconds (default 5 minutes; short values e.g. 2s used in tests). |
 | `LOG_FILE_PATH` | `portal_auth.log` | File path where the Demo Portal writes auth logs and Log Watcher tails. |
 | `DATABASE_URL` | `sqlite:///./sentinel.db` | SQLite database connection string or file path. |
-| `ADMIN_API_KEY` | `sentinel-admin-secret-key` | API key required for admin management endpoints (`X-Api-Key` header). |
+| `ADMIN_API_KEY` | `sentinel-admin-secret-key` | Secret key required for `/v1/*` admin management endpoints (`X-Api-Key` header). Loaded from environment; never hardcoded. |
 | `AI_API_KEY` | `""` | Optional external LLM API key. If empty or absent, AI explanation is disabled gracefully. |
 | `TRUST_PROXY` | `false` | Boolean (`true`/`false`). When `false`, uses connection socket IP; when `true`, parses `X-Forwarded-For`. |
 
@@ -167,7 +250,7 @@ flowchart TD
 
     subgraph Administration
         Admin[Administrator] -->|HTTP with X-Api-Key| AdminAPI[Admin API /v1/...]
-        AdminAPI -->|Query/Delete decisions & alerts| DS
+        AdminAPI -->|Query/Delete/Create decisions & alerts| DS
     end
 
     style AI stroke-dasharray: 5 5

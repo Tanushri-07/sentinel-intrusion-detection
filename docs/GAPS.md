@@ -79,9 +79,11 @@ The Sentinel rebuild selects one architectural Gap Fix and one high-value Differ
 **What Sentinel adds**: An optional AI Threat Explainer component that calls an external LLM API to produce a concise, plain-English explanation of detected attack patterns.
 
 **Design & Portability**:
-- **Fully Optional**: The Sentinel service operates completely without an AI key. If `AI_API_KEY` is empty or missing in `.env`, the system functions normally; alerts are saved with `ai_explanation = null`.
-- **Environment Driven**: Key is configured via `AI_API_KEY` in `.env`. No hardcoded credentials or external dependencies exist in source code.
-- **Admin Visibility**: Admins can view explanations via `GET /v1/alerts/{id}/explain` or within the alert payload.
+- **Fully Optional & Asynchronous**: The AI Threat Explainer executes strictly as an asynchronous background task (`asyncio.create_task`) after the Alert and Decision have been committed to SQLite. It NEVER delays or blocks ban enforcement.
+- **Provider & Model**: Uses Groq's OpenAI-compatible HTTP chat completions endpoint with model `llama-3.1-8b-instant`.
+- **Resilience**: Configured with a strict 5.0-second timeout and 0 retries. If `AI_API_KEY` is omitted, or if the API call times out or errors, Sentinel continues running without interruption, and `alert.ai_explanation` remains `NULL`.
+- **Zero Secrets**: Key is loaded from `AI_API_KEY` in `.env`. Only non-secret alert context (IP, count, window, timestamp) is transmitted; no passwords or secret tokens are shared.
+- **Admin Visibility**: Admins can view explanations via `GET /v1/alerts/{id}/explain` or within the `GET /v1/alerts` payload.
 
 **Demonstrated by**:
 - Alert creation with `AI_API_KEY` populated attaches an explanation to the incident report.

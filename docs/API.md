@@ -69,6 +69,13 @@ Positioned in front of the Demo Portal and protected routes.
 | **Request Body** | JSON: `{"username": "student", "password": "secret2024"}` |
 | **Seeded Users** | `alice:password123`, `student:secret2024`, `admin:adminpass` |
 
+#### Request Validation & Logging Rules
+- FastAPI schema validation applies to the incoming JSON body.
+- If JSON is malformed, required fields (`username`, `password`) are missing, or fields fail schema validation, FastAPI immediately returns `HTTP 422 Unprocessable Entity`.
+- **When HTTP 422 occurs, DO NOT append a `portal_auth.log` line** because the login handler was never entered.
+- Usernames containing the pipe character `|` are rejected during schema validation so the log delimiter remains strictly unambiguous.
+- Passwords are NEVER written to logs or stored in databases.
+
 **Responses**:
 - `200 OK` (Valid credentials):
   ```json
@@ -92,23 +99,46 @@ Positioned in front of the Demo Portal and protected routes.
     "until": "2026-10-05T22:35:00Z"
   }
   ```
+- `422 Unprocessable Entity` (Schema validation failure):
+  ```json
+  {
+    "detail": [
+      {
+        "loc": ["body", "username"],
+        "msg": "field required",
+        "type": "value_error.missing"
+      }
+    ]
+  }
+  ```
 
 #### Structured Log Output Requirement
-Every call to `POST /login` MUST synchronously append exactly one line to `portal_auth.log`:
+Every request that passes schema validation MUST append exactly one line to `portal_auth.log` (`LOG_FILE_PATH`) with a single atomic append operation followed by a newline:
 ```
 {timestamp} | ip={ip} | username={username} | result=success|fail
 ```
 - **Timestamp**: ISO 8601 UTC timestamp `YYYY-MM-DDTHH:MM:SSZ` (e.g. `2026-10-05T22:30:00Z`).
 - **IP**: Resolved client IP string.
-- **Username**: Submitted username (or `anonymous`).
-- **Result**: Exactly `success` or `fail`.
+- **Username**: Submitted username (stripped of leading/trailing whitespace).
+- **Result**: Exactly `success` (valid credentials) or `fail` (invalid credentials).
 
 ---
 
 ## Admin API Endpoints
 
-Admin endpoints require authentication via HTTP header:
+All admin endpoints (mounted under `/v1/*`) require authentication via HTTP header:
 `X-Api-Key: <ADMIN_API_KEY>`
+
+- `/health` is **public** and requires no authentication.
+- For every `/v1/*` endpoint, if `X-Api-Key` is missing, empty, or does not match `ADMIN_API_KEY` loaded from the environment, the endpoint immediately returns:
+  - **Status Code**: `401 Unauthorized`
+  - **Body**:
+    ```json
+    {
+      "detail": "Invalid or missing API key"
+    }
+    ```
+- `ADMIN_API_KEY` is loaded strictly from environment configuration (`.env`). Real secrets must never be hardcoded into source code or committed to repositories.
 
 ### 2. Health Check
 
@@ -216,3 +246,68 @@ Admin endpoints require authentication via HTTP header:
   }
   ```
   *(Returns `{"alert_id": 1, "ai_explanation": null, "message": "AI explanation disabled (AI_API_KEY not configured)"}` if no key is set).*
+
+
+### 8. Manually Create Decision (Ban IP)
+
+| Property | Value |
+|---|---|
+| **Method** | `POST` |
+| **Path** | `/v1/decisions` |
+| **Auth** | `X-Api-Key: <ADMIN_API_KEY>` (returns 401 if missing/invalid) |
+| **Purpose** | Allows administrators to manually ban an IP address for a specified duration. |
+
+#### Request Body
+```json
+{
+  "value": "198.51.100.10",
+  "duration_seconds": 3600,
+  "scenario": "manual"
+}
+```
+
+| Field | Type | Required | Default | Validation Rules | Description |
+|---|---|---|---|---|---|
+| `value` | string | yes | | Valid IPv4 or IPv6 address | IP address to ban |
+| `duration_seconds` | integer | yes | | Integer > 0 | Ban duration in seconds |
+| `scenario` | string | no | `"manual"` | String | Reason or scenario label |
+
+#### Validation & Constraints
+- If `value` is not a valid IPv4/IPv6 address or `duration_seconds <= 0`, returns `HTTP 422 Unprocessable Entity`.
+- Decision is inserted into SQLite with:
+  - `scope = "ip"`
+  - `value = request.value`
+  - `type = "ban"`
+  - `scenario = request.scenario or "manual"`
+  - `origin = "admin"` (or `"sentinel"`)
+  - `until = current_utc_time + duration_seconds`
+  - `active = 1`
+  - `alert_id = NULL`
+
+#### Responses
+- `201 Created`:
+  ```json
+  {
+    "id": 2,
+    "scope": "ip",
+    "value": "198.51.100.10",
+    "type": "ban",
+    "scenario": "manual",
+    "origin": "admin",
+    "until": "2026-10-05T23:35:00Z",
+    "active": 1,
+    "created_at": "2026-10-05T22:35:00Z"
+  }
+  ```
+- `401 Unauthorized` (Missing or invalid `X-Api-Key`):
+  ```json
+  {
+    "detail": "Invalid or missing API key"
+  }
+  ```
+- `422 Unprocessable Entity` (Invalid IP format or duration):
+  ```json
+  {
+    "detail": "Invalid IP address or duration"
+  }
+  ```

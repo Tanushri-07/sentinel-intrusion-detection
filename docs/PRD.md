@@ -20,19 +20,35 @@ University IT administrators responsible for keeping the student result portal a
 
 ---
 
-## 4. Core Flow
+## 4. Technology Stack (Locked)
+
+- **Language / Runtime**: Python 3.11+
+- **API Framework**: FastAPI (running on Uvicorn ASGI server as a single worker process)
+- **Database**: Local disk-backed SQLite using Python standard library `sqlite3` (WAL mode enabled)
+- **Production Dependencies**: `fastapi`, `uvicorn[standard]`, `pydantic`, `pydantic-settings`, `httpx`
+- **Test Dependencies**: `pytest`, `pytest-asyncio`
+- **External Infrastructure**: None (no Redis, Celery, RabbitMQ, or external DBs)
+
+---
+
+## 5. Core Flow
 
 1. The university portal (**Demo Portal**) receives authentication attempts (`POST /login`) and writes structured log lines to `portal_auth.log`.
 2. Sentinel's **Log Watcher** tails the log file and emits raw log lines into an in-memory queue/channel.
 3. The **Log Parser** transforms each raw line into a structured event (`timestamp`, `ip`, `username`, `result`).
-4. The **Attack Detector** receives parsed events and maintains per-IP sliding time windows. It evaluates configured scenarios (e.g. `BAN_THRESHOLD` failed logins within `WINDOW_SECONDS`).
-5. When the threshold is exceeded, the detector creates an **Alert** and a **Ban Decision** with `until = now + BAN_DURATION_SECONDS` in SQLite.
+4. The **Attack Detector** receives parsed events and maintains ephemeral in-memory per-IP sliding deques of failed login timestamps. It evaluates configured scenarios (`BAN_THRESHOLD` failed logins within `WINDOW_SECONDS`).
+5. When the threshold is reached within the window:
+   - Exactly one **Alert** is created in SQLite.
+   - Exactly one ban **Decision** is created in SQLite with `until = now + BAN_DURATION_SECONDS`.
+   - The IP's in-memory deque is immediately cleared.
+   - Subsequent failed attempts during an active ban do not extend the ban or create duplicate alerts.
+   - An asynchronous background task optionally queries Groq's API (`llama-3.1-8b-instant`) to generate `ai_explanation` without blocking ban enforcement.
 6. The **Blocker** middleware intercepts incoming requests to the portal. It checks SQLite for an active decision where `until > now`. If active, it immediately returns `HTTP 403 Forbidden` with the ban expiry timestamp.
 7. The moment `now >= until`, the request passes through cleanly. The **Expiry Sweeper** cleans up stale database records in the background.
 
 ---
 
-## 5. Scope Boundaries
+## 6. Scope Boundaries
 
 ### Must Have
 - **M1**: Demo Portal with `POST /login` validating seeded credentials and writing structured logs to `portal_auth.log`.
@@ -53,7 +69,7 @@ University IT administrators responsible for keeping the student result portal a
 
 ---
 
-## 6. Acceptance Criteria & Killer Test Execution
+## 7. Acceptance Criteria & Killer Test Execution
 
 The system's correctness is validated through three Killer Tests. Each test is specified in **Given / When / Then** format, followed by both automated `pytest` and manual demo script execution details.
 
@@ -115,7 +131,7 @@ The system's correctness is validated through three Killer Tests. Each test is s
 
 **Given** the `AI_API_KEY` configuration is set in `.env`,  
 **When** an attack threshold is reached and an alert is created,  
-**Then** Sentinel sends the incident context to the external LLM API and saves the resulting plain-English summary to `alert.ai_explanation`.
+**Then** Sentinel triggers an asynchronous background task sending non-secret incident context (alert ID, source IP, scenario, failure count, window, timestamp) to Groq's OpenAI-compatible chat completions API (`llama-3.1-8b-instant`) with a 5.0-second timeout and zero retries, and saves the resulting plain-English summary to `alert.ai_explanation`. Ban creation and Blocker enforcement are never blocked or delayed, and if the AI request times out or errors, `ai_explanation` remains null.
 
 ---
 
@@ -124,3 +140,20 @@ The system's correctness is validated through three Killer Tests. Each test is s
 **Given** active bans and historical alerts exist in SQLite,  
 **When** an administrator sends authenticated `GET` requests to `/v1/decisions` and `/v1/alerts` with `X-Api-Key`,  
 **Then** Sentinel returns JSON arrays containing active bans (with `ip`, `scenario`, `until`) and recorded alerts.
+
+---
+
+## 8. Configuration & Environment Variables
+
+All runtime settings and thresholds are loaded strictly from environment variables (e.g. `.env` via `pydantic-settings`):
+
+| Variable | Default Value | Description |
+|---|---|---|
+| `BAN_THRESHOLD` | `10` | Number of failed login attempts within window required to trigger a ban. |
+| `WINDOW_SECONDS` | `60` | Duration in seconds of the sliding detection window. |
+| `BAN_DURATION_SECONDS` | `300` | Duration of the ban in seconds (automated tests override with short value e.g. 2s). |
+| `LOG_FILE_PATH` | `portal_auth.log` | Path to log file written synchronously by portal and read by watcher. |
+| `DATABASE_URL` | `sqlite:///./sentinel.db` | Local SQLite database file location. |
+| `ADMIN_API_KEY` | `sentinel-admin-secret-key` | Secret key for `/v1/*` admin endpoints via `X-Api-Key` header. Loaded from env; never hardcoded. |
+| `AI_API_KEY` | `""` | Optional external LLM API key for Groq. If empty or absent, AI explanation is disabled gracefully. |
+| `TRUST_PROXY` | `false` | Boolean (`true`/`false`). When `false`, uses connection socket IP; when `true`, parses `X-Forwarded-For`. |

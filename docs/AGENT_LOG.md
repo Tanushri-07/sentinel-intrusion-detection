@@ -100,3 +100,16 @@ Updated documentation across `docs/` so that any independent AI agent can build 
 - **Client IP Resolution**: Defined socket-based IP extraction by default (`TRUST_PROXY=false`) and `X-Forwarded-For` parsing only when `TRUST_PROXY=true`.
 - **Killer Tests Execution**: Documented both automated `pytest` and manual demo script commands and execution details for all 3 Killer Tests in `PRD.md`.
 - **Preserved Observations & Gaps**: Verified CrowdSec findings preserved; gap fix and differentiator clearly partitioned and aligned with the rebuild stack.
+---
+
+## Canonical Project Root & Specification
+
+Canonical project root:
+`/Users/tanushri/Desktop/sentinel-intrusion-detection`
+
+Canonical specification:
+`/Users/tanushri/Desktop/sentinel-intrusion-detection/docs/`
+
+All implementation work must use this repository and its `docs/` directory.
+
+Do not create or maintain a second specification tree.

@@ -7,7 +7,7 @@
 This document defines the SQLite schema and data entities for Sentinel. The model supports the three Killer Tests and is optimized for synchronous, zero-delay ban enforcement via the Blocker middleware and background hygiene via the Expiry Sweeper.
 
 - **Stack Engine**: SQLite 3 (using WAL journal mode for concurrent read/write performance).
-- **Driver**: Python standard library `sqlite3` or `aiosqlite` with typed data transfer objects (Pydantic models).
+- **Driver**: Python standard library `sqlite3` module exclusively (with WAL journal mode enabled). Third-party ORMs or async SQLite drivers (`aiosqlite`, SQLAlchemy) are explicitly excluded.
 
 ---
 
@@ -118,7 +118,7 @@ erDiagram
 | `until` | TEXT | yes | | INDEXED | Exact ISO 8601 expiration timestamp |
 | `active` | INTEGER | yes | 1 | INDEXED | 1 = active, 0 = expired/revoked |
 | `created_at` | TEXT | yes | CURRENT_TIMESTAMP | | Record creation timestamp |
-| `alert_id` | INTEGER | yes | | FOREIGN KEY → ALERT(id) ON DELETE CASCADE | Parent alert |
+| `alert_id` | INTEGER | no | NULL | FOREIGN KEY → ALERT(id) ON DELETE CASCADE | Parent alert (NULL for manual bans via POST /v1/decisions) |
 
 **Indexes**:
 - `CREATE INDEX idx_decision_enforce ON decision(value, until);`
