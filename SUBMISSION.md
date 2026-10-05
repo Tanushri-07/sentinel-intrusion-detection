@@ -3,7 +3,7 @@
 ---
 
 ## Team Information
-- **Team**: Unknown (Solo / HackBack Participant)
+- **Team**: DBG-831
 - **Repository**: Sentinel Intrusion Detection
 - **Corpus / Study Target**: CrowdSec (`crowdsecurity/crowdsec`)
 
