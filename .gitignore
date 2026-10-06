@@ -1,0 +1,17 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Runtime files
+portal_auth.log
+*.db
+*.sqlite
+*.sqlite3
+
+# macOS
+.DS_Store
